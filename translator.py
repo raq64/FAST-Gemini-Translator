@@ -1,7 +1,9 @@
 import os
 import json
+import sys
+import threading
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import scrolledtext, ttk
 import requests
 from pathlib import Path
 
@@ -32,24 +34,51 @@ class TranslatorApp:
         master.title("Gemini Translator")
         master.attributes("-topmost", True)
 
-        self.chat_area = scrolledtext.ScrolledText(master, state='disabled', wrap='word', width=60, height=20)
-        self.chat_area.pack(padx=5, pady=5)
+        # High DPI awareness for Windows
+        if sys.platform == "win32":
+            try:
+                from ctypes import windll
+                windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                pass
+        # Scaling for high resolution displays
+        master.tk.call("tk", "scaling", 1.5)
 
-        self.entry = tk.Text(master, height=3, wrap='word')
-        self.entry.pack(padx=5, pady=(0,5), fill='x')
-        self.entry.bind('<Return>', self.handle_enter)
-        self.entry.bind('<Shift-Return>', self.newline)
+        # Modern theme
+        style = ttk.Style(master)
+        if "vista" in style.theme_names():
+            style.theme_use("vista")
+        self.font = ("Segoe UI", 11)
 
-        self.send_button = tk.Button(master, text="Send", command=self.send_message)
-        self.send_button.pack(padx=5, pady=(0,5))
+        self.chat_area = scrolledtext.ScrolledText(
+            master,
+            state="disabled",
+            wrap="word",
+            width=60,
+            height=20,
+            font=self.font,
+        )
+        self.chat_area.tag_config("user", foreground="green")
+        self.chat_area.pack(padx=10, pady=10)
+
+        self.entry = tk.Text(master, height=3, wrap="word", font=self.font)
+        self.entry.pack(padx=10, pady=(0, 10), fill="x")
+        self.entry.bind("<Return>", self.handle_enter)
+        self.entry.bind("<Shift-Return>", self.newline)
+
+        self.send_button = ttk.Button(master, text="Send", command=self.send_message)
+        self.send_button.pack(padx=10, pady=(0, 10))
 
         self.history = []
         self.load_history()
 
-    def append_chat(self, speaker, text):
-        self.chat_area.configure(state='normal')
-        self.chat_area.insert(tk.END, f"{speaker}: {text}\n")
-        self.chat_area.configure(state='disabled')
+    def append_chat(self, speaker, text, tag=None):
+        self.chat_area.configure(state="normal")
+        if tag:
+            self.chat_area.insert(tk.END, f"{speaker}: {text}\n", tag)
+        else:
+            self.chat_area.insert(tk.END, f"{speaker}: {text}\n")
+        self.chat_area.configure(state="disabled")
         self.chat_area.see(tk.END)
 
     def newline(self, event):
@@ -65,17 +94,28 @@ class TranslatorApp:
         if not text:
             return
         self.entry.delete("1.0", tk.END)
-        self.append_chat("You", text)
+        self.append_chat("You", text, tag="user")
+        self.master.update_idletasks()
+
         user_msg = {"role": "user", "parts": [{"text": text}]}
-        messages = self.history + [user_msg]
+        self.history.append(user_msg)
+        self.save_history()
+        messages = self.history[:]
+
+        thread = threading.Thread(target=self._get_response, args=(messages,))
+        thread.daemon = True
+        thread.start()
+
+    def _get_response(self, messages):
         try:
-            response = self.request_gemini(messages)
-            assistant_text = response
+            assistant_text = self.request_gemini(messages)
         except Exception as e:
             assistant_text = f"Error: {e}"
-        self.append_chat("Assistant", assistant_text)
-        self.history.extend([user_msg, {"role": "model", "parts": [{"text": assistant_text}]}])
+
+        model_msg = {"role": "model", "parts": [{"text": assistant_text}]}
+        self.history.append(model_msg)
         self.save_history()
+        self.master.after(0, lambda: self.append_chat("Assistant", assistant_text))
 
     def request_gemini(self, contents):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={API_KEY}"
@@ -97,7 +137,8 @@ class TranslatorApp:
                 for msg in self.history:
                     speaker = "You" if msg["role"] == "user" else "Assistant"
                     text = msg["parts"][0]["text"]
-                    self.append_chat(speaker, text)
+                    tag = "user" if speaker == "You" else None
+                    self.append_chat(speaker, text, tag=tag)
             except Exception:
                 self.history = []
 
